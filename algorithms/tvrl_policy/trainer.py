@@ -10,11 +10,13 @@ DEFAULT_CONFIG = COMMON_CONFIG.update(
         'device': 'cpu',
         'exploration_time': .75,
         'entrop_min_init_ratio': .5,
+        'entrop_tsallis_init_ratio': .9,
         'timesteps_total': 8e6,
         'lambda_final': .5,
         'tv_max': .1,
         'lambda': .95,
         'sgd_minibatch_size': 64,
+        'nb_sgd_epochs': 3,
      }
 )  # Default config parameters that can be overriden by experiments YAML.
 

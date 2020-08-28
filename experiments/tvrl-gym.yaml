@@ -1,11 +1,11 @@
 procgen-starter-example:
 #  env: procgen_env_wrapper  # Change this at your own risk :D
-#  env: LunarLander-v2  # Change this at your own risk :D
-  env: CartPole-v0  # Change this at your own risk :D
+  env: LunarLander-v2  # Change this at your own risk :D
+#  env: CartPole-v1  # Change this at your own risk :D
   run: TVRL
 
   stop:
-    timesteps_total: &timesteps_total 3000000
+    timesteps_total: &timesteps_total 500000
   checkpoint_freq: 25
   checkpoint_at_end: True
   keep_checkpoints_num: 5
@@ -22,8 +22,8 @@ procgen-starter-example:
       distribution_mode: easy
 
     num_workers: 2
-    num_envs_per_worker: 5
-    rollout_fragment_length: 3000
+    num_envs_per_worker: 4
+    rollout_fragment_length: 1000
     num_gpus_per_worker: .05
     num_gpus: .9
     num_cpus_per_worker: 1
@@ -33,17 +33,19 @@ procgen-starter-example:
     use_pytorch: True
 
     # entropy cst settings
-    entropy_cst_type: 'min'
-#    device: 'cuda'
-    device: 'cpu'
+    entropy_cst_type: 'min tsallis'
+    device: 'cuda'
+#    device: 'cpu'
     exploration_time: .75
     entrop_min_init_ratio: .5
+    entrop_tsallis_init_ratio: .9
     timesteps_total: *timesteps_total
 
     # training settings
     lr: 5.0e-4
-    gamma: 0.999
-    lambda: 0.95
+    gamma: .999
+    lambda: .95
     lambda_final: .5
     tv_max: .1
     sgd_minibatch_size: 64
+    nb_sgd_epochs: 10

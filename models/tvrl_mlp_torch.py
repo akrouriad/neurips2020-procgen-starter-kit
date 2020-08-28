@@ -36,10 +36,10 @@ class MLP(nn.Module):
 class MLPPolicy(nn.Module):
     def __init__(self, obs_space, num_outputs, config):
         nn.Module.__init__(self)
-        self.model = MLP([obs_space.shape[0]] + 3 * [256])  # replace with config at some point
-        self.logits_fc = nn.Linear(in_features=256, out_features=num_outputs)
-        self.value_fc = nn.Linear(in_features=256, out_features=1)
-        self.temp_fc = nn.Linear(in_features=256, out_features=1)
+        self.model = MLP([obs_space.shape[0]] + 2 * [64])  # replace with config at some point
+        self.logits_fc = nn.Linear(in_features=64, out_features=num_outputs)
+        self.value_fc = nn.Linear(in_features=64, out_features=1)
+        self.temp_fc = nn.Linear(in_features=64, out_features=1)
         self.temp_mult = nn.Parameter(torch.tensor(0.))
         self.entropy_projs = init_entropy_projs(num_outputs, config)
         self._features, self._adv, self._value, self._probs = (None,) * 4
@@ -50,7 +50,7 @@ class MLPPolicy(nn.Module):
     def forward(self, x):
         self.compute_features(x)
         self._adv = self.logits_fc(self._features)
-        self._value = self.value_fc(self._features)
+        self._value = self.get_v_from_features()
         logits_unproj = self.temp_mult * (self.temp_fc(self._features) ** 2) * self._adv
         probs = torch.softmax(logits_unproj, dim=-1)
         for eproj in self.entropy_projs:
@@ -58,9 +58,12 @@ class MLPPolicy(nn.Module):
         self._probs = probs
         return probs
 
+    def get_v_from_features(self):
+        return self.value_fc(self._features)
+
     def get_v_from_obs(self, x):
         self.compute_features(x)
-        return self.value_fc(self._features)
+        return self.get_v_from_features()
 
     def get_state_dict_clone(self):
         w = self.state_dict()

@@ -65,14 +65,43 @@ class DiscreteMinprobEntropyProjection:
         if any(violating_states):
             prob_unif = 1. / self.nb_act
             eta = ((prob_unif - target_entropy) / (prob_unif - curr_entrop[violating_states])).unsqueeze_(1)
-            probs = torch.zeros_like(probs)
-            probs[violating_states] = eta * probs[violating_states] + (1 - eta) * prob_unif
-            probs[~violating_states] = probs[~violating_states]
-        return probs
+            probs_new = torch.zeros_like(probs)
+            probs_new[violating_states] = eta * probs[violating_states] + (1 - eta) * prob_unif
+            probs_new[~violating_states] = probs[~violating_states]
+            return probs_new
+        else:
+            return probs
 
     @staticmethod
     def entropy(probs):
         return torch.min(probs, dim=-1)[0]
+
+
+class DiscreteTsallisEntropyProjection:
+    def __init__(self, nb_act, init_entrop_ratio, explore_time):
+        self.entropy_profile = LinearProfile(y0=init_entrop_ratio, y1=0., x1=explore_time)
+        self.nb_act = nb_act
+
+    def project(self, probs):
+        target_entropy = self.entropy_profile.get_target()
+        curr_entrop = self.entropy(probs)
+        violating_states = curr_entrop < target_entropy - 1e-6
+        if any(violating_states):
+            beta = 1 - target_entropy * (self.nb_act - 1) / self.nb_act
+            a = torch.sum((probs[violating_states] - 1 / self.nb_act)**2, dim=-1)
+            b = torch.mean(probs[violating_states] - 1 / self.nb_act, dim=-1)
+            c = 1 / self.nb_act - beta
+            delta = b**2 - a * c
+            eta = ((-b + torch.sqrt(delta)) / a).unsqueeze_(1)
+            new_probs = torch.zeros_like(probs)
+            new_probs[violating_states] = eta * probs[violating_states] + (1-eta) / self.nb_act
+            new_probs[~violating_states] = probs[~violating_states]
+            return new_probs
+        else:
+            return probs
+
+    def entropy(self, probs):
+        return (1 - torch.sum(probs**2, dim=-1)) * self.nb_act / (self.nb_act - 1)
 
 
 def init_entropy_projs(num_outputs, config):
@@ -80,6 +109,9 @@ def init_entropy_projs(num_outputs, config):
     for etype in config['entropy_cst_type'].split(' '):
         if etype == 'min':
             entropy_projs.append(DiscreteMinprobEntropyProjection(num_outputs, config['entrop_min_init_ratio'],
+                                                                  config['exploration_time']))
+        elif etype == 'tsallis':
+            entropy_projs.append(DiscreteTsallisEntropyProjection(num_outputs, config['entrop_tsallis_init_ratio'],
                                                                   config['exploration_time']))
     return entropy_projs
 
