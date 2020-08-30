@@ -40,20 +40,19 @@ class ProcgenDiffObsEnvWrapper(gym.Env):
 
     def reset(self):
         assert self._done, "procgen envs cannot be early-restarted"
-        # self._lastobs = None
         self._lastobs = self.env.reset()
-        self._lastobs = self._lastobs.copy()
         # return self._lastobs / self._scale
         return self._lastobs.copy()
+        # return self._lastobs.copy()
 
     def step(self, action):
         obs, rew, done, info = self.env.step(action)
         self._done = done
-        diffobs = (obs / self._scale + (obs - self._lastobs) + 255) / (2 + 1 / self._scale + 1e-3)
+        # diffobs = (obs / self._scale + (obs - self._lastobs) + 255) / (2 + 1 / self._scale + 1e-3)
         # print('last obs shape {}, obs shape {}'.format(self._lastobs.shape, obs.shape))
-        self._lastobs = obs.copy()
-        return diffobs.copy(), rew, done, info
-        # return obs, rew, done, info
+        # self._lastobs = obs.copy()
+        # return diffobs.copy(), rew, done, info
+        return obs, rew, done, info
 
     def render(self, mode="human"):
         return self.env.render(mode=mode)
