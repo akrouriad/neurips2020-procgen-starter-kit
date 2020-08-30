@@ -21,12 +21,7 @@ def _import_random_policy():
     from .random_policy.trainer import RandomPolicyTrainer
     return RandomPolicyTrainer
 
-def _import_tvrl():
-    from .tvrl_policy.trainer import TVRLPolicyTrainer
-    return TVRLPolicyTrainer
-
 CUSTOM_ALGORITHMS = {
     "custom/CustomRandomAgent": _import_custom_random_agent,
     "RandomPolicy": _import_random_policy,
-    "TVRL": _import_tvrl
 }
