@@ -48,12 +48,11 @@ class ProcgenDiffObsEnvWrapper(gym.Env):
     def step(self, action):
         obs, rew, done, info = self.env.step(action)
         self._done = done
-        diffobs = (obs / self._scale + (obs - self._lastobs) + 255) / (2 + 1 / self._scale + 1e-3)
+        diffobs = ((obs / self._scale + (obs - self._lastobs) + 255) / (2 + 1 / self._scale + 1e-3)).copy()
         # print('last obs shape {}, obs shape {}'.format(self._lastobs.shape, obs.shape))
         self._lastobs = obs
-        obs = diffobs
-        # return diffobs.copy(), rew, done, info
-        return obs, rew, done, info
+        return diffobs, rew, done, info
+        # return obs, rew, done, info
 
     def render(self, mode="human"):
         return self.env.render(mode=mode)
