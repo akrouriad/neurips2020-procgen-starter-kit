@@ -46,7 +46,11 @@ class ProcgenDiffObsEnvWrapper(gym.Env):
     def step(self, action):
         obs, rew, done, info = self.env.step(action)
         self._done = done
-        diffobs = obs / self._scale + (obs - self._lastobs)
+        diffobs = (obs / self._scale + (obs - self._lastobs) + 255) / (2 + 1 / self._scale + 1e-3) 
+        if np.max(diffobs) > 255:
+                print('max', np.max(diffobs))
+        if np.min(diffobs) < 0:
+                print('min', np.min(diffobs))
         self._lastobs = obs
         return diffobs, rew, done, info
 
