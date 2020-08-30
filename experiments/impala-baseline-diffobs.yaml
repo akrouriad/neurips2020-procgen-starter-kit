@@ -280,7 +280,6 @@ procgen-ppo:
         ################################################
         ################################################
         # Element-wise observation filter, either "NoFilter" or "MeanStdFilter".
-        observation_filter: "NoFilter"
         # Whether to synchronize the statistics of remote filters.
         synchronize_filters: True
         # Whether to LZ4 compress individual observations
