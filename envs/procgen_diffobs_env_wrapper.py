@@ -51,7 +51,7 @@ class ProcgenDiffObsEnvWrapper(gym.Env):
         self._done = done
         # diffobs = ((obs / self._scale + (obs - self._lastobs) + 255) / (2 + 1 / self._scale + 1e-3)).copy()
         # diffobs = ((obs / self._scale + (obs) + 255) / (2 + 1 / self._scale + 1e-3)).copy()
-        diffobs = obs
+        diffobs = obs / self._scale
         # print('last obs shape {}, obs shape {}'.format(self._lastobs.shape, obs.shape))
         # self._lastobs = obs
         return diffobs, rew, done, info
