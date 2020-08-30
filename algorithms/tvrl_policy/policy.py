@@ -83,9 +83,9 @@ class TVRLPolicy(Policy):
         **kwargs
     ):
         with torch.no_grad():
-            self.model.forward(torch.Tensor(np.stack(obs_batch), device=self.device))
-            action_batch = torch.distributions.Categorical(probs=self.model._probs).sample().numpy()
-            info = {'v_vals': self.model._value.clone().squeeze_(1).numpy(), 'probs': self.model._probs.clone().numpy()}
+            self.model.forward(torch.tensor(np.stack(obs_batch), device=self.device))
+            action_batch = torch.distributions.Categorical(probs=self.model._probs).sample().cpu().numpy()
+            info = {'v_vals': self.model._value.clone().squeeze_(1).cpu().numpy(), 'probs': self.model._probs.clone().cpu().numpy()}
 
         return action_batch, [], info
 
@@ -97,17 +97,15 @@ class TVRLPolicy(Policy):
 
             # scaling rewards
             old_rwd_scale = self.rwd_scale
-            self.rwd_scale = max(np.std(samples['rewards']), 1.)
+            self.rwd_scale = max(np.std(samples['rewards']), 1e-2)
+            # self.rwd_scale = max(np.std(samples['v_vals']), 1e-3)
+            print(self.rwd_scale)
             rwd = samples['rewards'] / self.rwd_scale
             v_vals = samples['v_vals'] * old_rwd_scale / self.rwd_scale
             v_vals_next *= old_rwd_scale / self.rwd_scale
 
             # computing targets
             v_targ, a_targ = self.get_targets(v_vals, v_vals_next, rwd, last_from_ep)
-
-            # self.model.update_v_stats(np.mean(v_targ), np.std(v_targ))
-            avg_l1_err = max(np.mean(np.abs(v_vals - v_targ)), 1)
-            print('norma', avg_l1_err)
 
             # updating number of samples and entropy profiles before update
             nb_samples = len(samples['rewards'])
@@ -118,11 +116,11 @@ class TVRLPolicy(Policy):
             self.lambda_profile.set_phase(self.phase)
 
 
-        obs = torch.Tensor(samples['obs'], device=self.device)
-        act = torch.LongTensor(samples['actions'], device=self.device).unsqueeze(1)
-        old_probs = torch.Tensor(samples['probs'], device=self.device)
-        v_targ = torch.Tensor(v_targ, device=self.device).unsqueeze(1)
-        a_targ = torch.Tensor(a_targ, device=self.device).unsqueeze(1)
+        obs = torch.tensor(samples['obs'], device=self.device)
+        act = torch.tensor(samples['actions'], dtype=torch.long, device=self.device).unsqueeze(1)
+        old_probs = torch.tensor(samples['probs'], device=self.device)
+        v_targ = torch.tensor(v_targ, device=self.device).unsqueeze(1)
+        a_targ = torch.tensor(a_targ, device=self.device).unsqueeze(1)
 
         def tv_proj_probs(p, q, scale, cst_fc):
             hx = cst_fc(p, q)
@@ -134,7 +132,7 @@ class TVRLPolicy(Policy):
 
         init_params = self.model.get_state_dict_clone()
 
-        for epoch in range(self.nb_epochs): #! CHANGE to dep on time
+        for epoch in range(self.nb_epochs):
             for batch_idx in next_batch_idx(self.sgd_minibatch_size, len(samples['rewards'])):
                 self.optim.zero_grad()
                 probs = self.model.forward(obs[batch_idx])
@@ -146,6 +144,9 @@ class TVRLPolicy(Policy):
                 loss_a = self.lossf_v(self.model._adv.gather(dim=1, index=act[batch_idx]), a_targ[batch_idx]) / eta.detach()
                 loss_v = self.lossf_v(self.model._value, v_targ[batch_idx]) / eta.detach()
                 (loss_p + loss_v + loss_a).backward()
+                # loss_p = -torch.mean(projected_probs.gather(dim=1, index=act[batch_idx]) * a_targ[batch_idx] / old_probs[batch_idx]) #/ eta.detach()
+                # loss_v = self.lossf_v(self.model._value, v_targ[batch_idx]) #/ eta.detach()
+                # (loss_p + loss_v).backward()
                 self.optim.step()
 
         ls_idx = np.random.choice(len(samples['rewards']), min(len(samples['rewards']), 500), replace=False)
@@ -196,7 +197,7 @@ class TVRLPolicy(Policy):
             self.lr_scaling *= .7
         elif best_avg_tv_val < .9 * self.tv_max:
             self.lr_scaling *= 1.1
-        self.lr_scaling = min(max(self.lr_scaling, 1e-3), 1)
+        self.lr_scaling = min(max(self.lr_scaling, 1e-3), 1e2)
         for pg in self.optim.param_groups:
             pg['lr'] = self.lr * self.lr_scaling
 
