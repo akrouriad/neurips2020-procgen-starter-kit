@@ -41,7 +41,7 @@ class ProcgenDiffObsEnvWrapper(gym.Env):
     def reset(self):
         assert self._done, "procgen envs cannot be early-restarted"
         self._lastobs = self.env.reset()
-        return self._lastobs
+        return (self._lastobs / self._scale).astype(np.uint8)
 
     def step(self, action):
         obs, rew, done, info = self.env.step(action)
