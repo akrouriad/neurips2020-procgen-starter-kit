@@ -1,5 +1,5 @@
 procgen-ppo:
-    env: procgen_diffobs_env_wrapper  # Change this at your own risk :D
+    env: procgen_inchan_env_wrapper  # Change this at your own risk :D
     run: PPO
     # Can be replaced by any of the available agents as described at : 
     # https://github.com/ray-project/ray/blob/master/rllib/agents/registry.py#L103
@@ -63,10 +63,10 @@ procgen-ppo:
         lr: 5.0e-4
         # Number of SGD iterations in each outer loop (i.e., number of epochs to
         # execute per train batch).
-        num_sgd_iter: 6
+        num_sgd_iter: 3
         # Total SGD batch size across all devices for SGD. This defines the
         # minibatch size within each epoch.
-        sgd_minibatch_size: 256 # 8 minibatches per epoch
+        sgd_minibatch_size: 512 # 8 minibatches per epoch
         # Training batch size, if applicable. Should be >= rollout_fragment_length.
         # Samples batches will be concatenated together to a batch of this size,
         # which is then passed to SGD.
