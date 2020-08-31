@@ -1,7 +1,7 @@
   {
       "challenge_id" : "evaluations-api-neurips-2020-procgen",
       "grader_id": "evaluations-api-neurips-2020-procgen",
-      "authors" : ["KousKous"],
+      "authors" : ["akrouriad"],
       "description" : "NeurIPS 2020: Procgen Competition Agent",
       "debug" : false
   }
