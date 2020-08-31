@@ -1,7 +1,7 @@
 procgen-ppo:
+    env: procgen_maxchan_env_wrapper  # Change this at your own risk :D
 #    env: procgen_inchan_env_wrapper  # Change this at your own risk :D
 #    env: procgen_diffobs_env_wrapper  # Change this at your own risk :D
-    env: procgen_maxchan_env_wrapper  # Change this at your own risk :D
 #    env: procgen_env_wrapper  # Change this at your own risk :D
     run: CustomPPO
     # Can be replaced by any of the available agents as described at : 
