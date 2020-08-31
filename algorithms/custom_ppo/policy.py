@@ -114,12 +114,12 @@ class CustomPPOLoss:
         self.mean_policy_loss = reduce_mean_valid(-surrogate_loss)
 
         if use_gae:
-            # vf_loss1 = tf.square(value_fn - value_targets)
-            vf_loss1 = tf.abs(value_fn - value_targets)
+            vf_loss1 = tf.square(value_fn - value_targets)
+            # vf_loss1 = tf.abs(value_fn - value_targets)
             vf_clipped = vf_preds + tf.clip_by_value(
                 value_fn - vf_preds, -vf_clip_param, vf_clip_param)
-            # vf_loss2 = tf.square(vf_clipped - value_targets)
-            vf_loss2 = tf.abs(vf_clipped - value_targets)
+            vf_loss2 = tf.square(vf_clipped - value_targets)
+            # vf_loss2 = tf.abs(vf_clipped - value_targets)
             vf_loss = tf.maximum(vf_loss1, vf_loss2)
             self.mean_vf_loss = reduce_mean_valid(vf_loss)
             loss = reduce_mean_valid(
