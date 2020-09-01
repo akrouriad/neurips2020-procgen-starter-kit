@@ -96,16 +96,22 @@ class TVRLPolicy(Policy):
             v_vals_next, last_from_ep = self.get_v_vals_next(samples)
 
             # scaling rewards
-            old_rwd_scale = self.rwd_scale
-            self.rwd_scale = max(np.std(samples['rewards']), 1e-2)
+            # old_rwd_scale = self.rwd_scale
+            rwd_scale_lr = .3
+            # self.rwd_scale = rwd_scale_lr * np.std(samples['rewards']) + (1 - rwd_scale_lr) * self.rwd_scale
             # self.rwd_scale = max(np.std(samples['v_vals']), 1e-3)
-            print(self.rwd_scale)
-            rwd = samples['rewards'] / self.rwd_scale
-            v_vals = samples['v_vals'] * old_rwd_scale / self.rwd_scale
-            v_vals_next *= old_rwd_scale / self.rwd_scale
+            # print(self.rwd_scale)
+            # rwd = samples['rewards'] / self.rwd_scale
+            # v_vals = samples['v_vals'] * old_rwd_scale / self.rwd_scale
+            # v_vals_next *= old_rwd_scale / self.rwd_scale
 
             # computing targets
-            v_targ, a_targ = self.get_targets(v_vals, v_vals_next, rwd, last_from_ep)
+            # v_targ, a_targ = self.get_targets(v_vals, v_vals_next, rwd, last_from_ep)
+            # v_targ, a_targ = self.get_targets(samples['v_vals'], v_vals_next, samples['rewards'] / max(self.rwd_scale, 1e-2), last_from_ep)
+            v_targ, a_targ = self.get_targets(samples['v_vals'], v_vals_next, samples['rewards'], last_from_ep)
+            # self.rwd_scale = rwd_scale_lr * np.std(v_targ) + (1 - rwd_scale_lr) * self.rwd_scale
+            self.rwd_scale = 1.
+            print(self.rwd_scale)
 
             # updating number of samples and entropy profiles before update
             nb_samples = len(samples['rewards'])
@@ -126,27 +132,33 @@ class TVRLPolicy(Policy):
             hx = cst_fc(p, q)
             if hx > 0:
                 eta = 1 / (1 + hx / scale)
-                return eta * p + (1 - eta) * q, eta
+                return eta * p + (1 - eta) * q, eta, hx
             else:
-                return p, torch.tensor(1., device=self.device)
+                return p, torch.tensor(1., device=self.device), hx
 
         init_params = self.model.get_state_dict_clone()
+
 
         for epoch in range(self.nb_epochs):
             for batch_idx in next_batch_idx(self.sgd_minibatch_size, len(samples['rewards'])):
                 self.optim.zero_grad()
                 probs = self.model.forward(obs[batch_idx])
-                projected_probs, eta = tv_proj_probs(probs, old_probs[batch_idx], self.cst_fct.tv_max, self.cst_fct)
-                loss_p_proj = torch.sum(projected_probs * self.model._adv.detach(), dim=1)
+                # clipped_probs = torch.min(torch.max(probs, old_probs[batch_idx] - self.tv_max), old_probs[batch_idx] + self.tv_max)
+                # loss_p_proj = torch.min(torch.sum(clipped_probs * self.model._adv.detach(), dim=1), torch.sum(probs * self.model._adv.detach(), dim=1))
+                projected_probs, eta, tv_cst = tv_proj_probs(probs, old_probs[batch_idx], self.cst_fct.tv_max, self.cst_fct)
+                # loss_p_proj = torch.sum(projected_probs * self.model._adv.detach(), dim=1)
+                loss_p_proj = torch.sum(probs * self.model._adv.detach(), dim=1)
+                # loss_p_proj = torch.min(torch.sum(projected_probs * self.model._adv.detach(), dim=1), torch.sum(probs * self.model._adv.detach(), dim=1))
                 # loss_p_unproj = torch.sum(self.model._probs * self.model._adv.detach(), dim=1)
                 # loss_p = -torch.mean(torch.min(loss_p_proj, loss_p_unproj)) / eta.detach()
-                loss_p = -torch.mean(loss_p_proj) / eta.detach()
-                loss_a = self.lossf_v(self.model._adv.gather(dim=1, index=act[batch_idx]), a_targ[batch_idx]) / eta.detach()
-                loss_v = self.lossf_v(self.model._value, v_targ[batch_idx]) / eta.detach()
+                loss_p = (-torch.mean(loss_p_proj) / self.rwd_scale + max(tv_cst, 0) / self.lr_scaling)
+                loss_a = self.lossf_v(self.model._adv.gather(dim=1, index=act[batch_idx]), a_targ[batch_idx]) / self.rwd_scale
+                loss_v = self.lossf_v(self.model._value, v_targ[batch_idx]) / self.rwd_scale
                 (loss_p + loss_v + loss_a).backward()
                 # loss_p = -torch.mean(projected_probs.gather(dim=1, index=act[batch_idx]) * a_targ[batch_idx] / old_probs[batch_idx]) #/ eta.detach()
                 # loss_v = self.lossf_v(self.model._value, v_targ[batch_idx]) #/ eta.detach()
                 # (loss_p + loss_v).backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), .5)
                 self.optim.step()
 
         ls_idx = np.random.choice(len(samples['rewards']), min(len(samples['rewards']), 500), replace=False)
@@ -165,41 +177,44 @@ class TVRLPolicy(Policy):
         # check constraint and do line search eventually
         with torch.no_grad():
             best_stepsize = 1.
-            best_avg_tv_val = cst_fct_model(self.model) + self.tv_max
-            if best_avg_tv_val > self.tv_max:
-                lower_bound = 0.
-                upper_bound = 1.
-                optim_param = self.model.get_state_dict_clone()
-                best_loss = np.inf
-                found_valid = False
-                for _ in range(10):
-                    stepsize = (upper_bound + lower_bound) / 2
-                    self.model.soft_weight_set(optim_param, init_params, stepsize)
-                    avg_tv_val = cst_fct_model(self.model) + self.tv_max
-                    if avg_tv_val <= self.tv_max:
-                        found_valid = True
-                        new_loss = loss_fc_ls(self.model)
-                        if new_loss <= best_loss:
-                            best_loss = new_loss
-                            best_stepsize = stepsize
-                            best_avg_tv_val = avg_tv_val
-                        lower_bound = stepsize
-                    else:
-                        upper_bound = stepsize
-                if found_valid:
-                    self.model.soft_weight_set(optim_param, init_params, best_stepsize)
+            best_avg_tv_val = np.inf
+            best_loss = np.inf
+            lower_bound = 0.
+            upper_bound = 2.
+            upper_init = False
+            optim_param = self.model.get_state_dict_clone()
+            found_valid = False
+            for _ in range(10):
+                stepsize = (upper_bound + lower_bound) / 2
+                self.model.soft_weight_set(optim_param, init_params, stepsize)
+                avg_tv_val = cst_fct_model(self.model) + self.tv_max
+                if avg_tv_val <= 1.5 * self.tv_max:
+                    found_valid = True
+                    new_loss = loss_fc_ls(self.model)
+                    if new_loss <= best_loss:
+                        best_loss = new_loss
+                        best_stepsize = stepsize
+                        best_avg_tv_val = avg_tv_val
+                    # if not upper_init:
+                    #     upper_bound *= 2
+                    lower_bound = stepsize
                 else:
-                    best_stepsize = 0.
-                    self.model.load_state_dict(init_params)
+                    upper_bound = stepsize
+                    upper_init = True
+            if found_valid:
+                self.model.soft_weight_set(optim_param, init_params, best_stepsize)
+            else:
+                best_stepsize = 0.
+                self.model.load_state_dict(init_params)
 
         self.soft_stepsize += .5 * (best_stepsize - self.soft_stepsize)
         if self.soft_stepsize < .85:
             self.lr_scaling *= .7
         elif best_avg_tv_val < .9 * self.tv_max:
-            self.lr_scaling *= 1.1
-        self.lr_scaling = min(max(self.lr_scaling, 1e-3), 1e2)
+            # self.lr_scaling *= 1.1
+            self.lr_scaling *= 1.5
         for pg in self.optim.param_groups:
-            pg['lr'] = self.lr * self.lr_scaling
+            pg['lr'] = self.lr * min(max(self.lr_scaling, 1e-3), 1.)
 
         print('sz {:3.2f} lrs {} lr {:3.6f} tv {:3.2f}; target_lam {:3.2f} target_entropy {}; ts {}'.
               format(best_stepsize, self.lr_scaling, self.optim.param_groups[0]['lr'], best_avg_tv_val, self.lambda_profile.get_target(),

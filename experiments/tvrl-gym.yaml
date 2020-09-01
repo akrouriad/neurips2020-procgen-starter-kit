@@ -5,7 +5,7 @@ procgen-starter-example:
   run: TVRL
 
   stop:
-    timesteps_total: &timesteps_total 500000
+    timesteps_total: &timesteps_total 300000
   checkpoint_freq: 25
   checkpoint_at_end: True
   keep_checkpoints_num: 5
@@ -23,7 +23,7 @@ procgen-starter-example:
 
     num_workers: 2
     num_envs_per_worker: 4
-    rollout_fragment_length: 1000
+    rollout_fragment_length: 500
     num_gpus_per_worker: .05
     num_gpus: .9
     num_cpus_per_worker: 1
@@ -36,8 +36,8 @@ procgen-starter-example:
     entropy_cst_type: 'min tsallis'
     device: 'cuda'
 #    device: 'cpu'
-    exploration_time: .75
-    entrop_min_init_ratio: .5
+    exploration_time: .85
+    entrop_min_init_ratio: .1
     entrop_tsallis_init_ratio: .9
     timesteps_total: *timesteps_total
 

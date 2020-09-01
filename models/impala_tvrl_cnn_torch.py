@@ -151,7 +151,7 @@ class ImpalaCNN(nn.Module):
         self.compute_features(x)
         self._adv = self.logits_fc(self._features)
         self._value = self.value_fc(self._features)
-        logits_unproj = self.temp_mult * (self.temp_fc(self._features) ** 2) * self._adv
+        logits_unproj = torch.exp(self.temp_mult) * torch.clamp_min(self.temp_fc(self._features), 1) * self._adv
         probs = torch.softmax(logits_unproj, dim=-1)
         for eproj in self.entropy_projs:
             probs = eproj.project(probs)
