@@ -90,7 +90,7 @@ procgen-ppo:
         # scale of the rewards. If your expected V is large, increase this.
 #        vf_clip_param: 0.2
         # If specified, clip the global norm of gradients by this amount.
-#        grad_clip: 0.5
+        grad_clip: 0.5
 #        grad_clip: None
         # Which observation filter to apply to the observation.
         observation_filter: NoFilter
