@@ -63,17 +63,13 @@ class ImpalaCNNEntropCst(TFModelV2):
         x = tf.keras.layers.ReLU()(x)
         x = tf.keras.layers.Dense(units=256, activation="relu", name="hidden")(x)
 
-        # logits_mul = tf.keras.backend.variable(value=1e-3, name='logits_temp')
         self._min_entrop_min_val = tf.keras.backend.variable(value=self._min_entrop_init_val * self._max_min_entrop, name='min_entrop_min_val')
         self._min_entrop_min_val._trainable = False
         self._shan_entrop_min_val = tf.keras.backend.variable(value=self._shan_entrop_init_val * self._max_shan_entrop, name='shan_entrop_min_val')
         self._shan_entrop_min_val._trainable = False
 
-        # logits_unproj = logits_mul * tf.keras.layers.Dense(units=num_outputs)(x)
         logits_unproj = tf.keras.layers.Dense(units=num_outputs)(x)
         probs_unproj = tf.nn.softmax(logits_unproj)
-        # self.min_ent_proj = DiscreteMinprobEntropyProjection(num_outputs, 0., 0.) ## !!!!!! CORRECT LATER
-        # probs = self.min_ent_proj.project(probs)
 
         # Min entrop proj
         curr_entrop = tf.reduce_min(probs_unproj, axis=-1)
@@ -86,7 +82,7 @@ class ImpalaCNNEntropCst(TFModelV2):
 
         # Shannon entrop proj
         curr_entrop = tf.reduce_sum(-probs_min_proj * logits_min_proj, axis=-1)
-        violating_states = tf.less(curr_entrop, self._shan_entrop_init_val - 1e-2)
+        violating_states = tf.less(curr_entrop, self._shan_entrop_min_val - 1e-2)
         eta = tf.expand_dims((self._max_shan_entrop - self._shan_entrop_min_val) / tf.clip_by_value(self._max_shan_entrop - curr_entrop, clip_value_min=1e-16, clip_value_max=self._max_shan_entrop), dim=-1)
         proj_probs_shan = tf.where(violating_states, x=eta * probs_min_proj + (1. - eta) * self._max_min_entrop, y=probs_min_proj)
 
@@ -110,11 +106,9 @@ class ImpalaCNNEntropCst(TFModelV2):
         self._current_sample_count += sample_count
         new_min_entrop_min_val = (1. - (self._current_sample_count / self._timesteps_total / self._explore_time)) * self._min_entrop_init_val * self._max_min_entrop
         new_shan_entrop_min_val = (1. - (self._current_sample_count / self._timesteps_total / self._explore_time)) * self._shan_entrop_init_val * self._max_shan_entrop
-        # print(new_min_entrop_min_val, self._min_entrop_min_val.eval(session=sess))
         self._min_entrop_min_val.load(new_min_entrop_min_val, session=sess)
         self._shan_entrop_min_val.load(new_shan_entrop_min_val, session=sess)
-        # print(new_min_entrop_min_val, self._min_entrop_min_val.eval(session=sess))
-
+        print('min_entrop_cst {} shan_entrop_cst {}'.format(new_min_entrop_min_val, new_shan_entrop_min_val))
 
 # Register model in ModelCatalog
 ModelCatalog.register_custom_model("impala_cnn_entropcst_tf", ImpalaCNNEntropCst)

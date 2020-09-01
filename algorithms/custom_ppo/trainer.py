@@ -35,6 +35,7 @@ class CustomSyncOptimizer(SyncSamplesOptimizer):
         with self.grad_timer:
             for k, v in self.policies.items():
                 v.model.update_entropy_targets(samples.count, v._sess)
+            self.standardize_fields = []
 
             fetches = do_minibatch_sgd(samples, self.policies,
                                        self.workers.local_worker(),
@@ -49,6 +50,7 @@ class CustomSyncOptimizer(SyncSamplesOptimizer):
             self.learner_stats = fetches
         self.num_steps_sampled += samples.count
         self.num_steps_trained += samples.count
+        print(self.learner_stats)
         return self.learner_stats
 
 

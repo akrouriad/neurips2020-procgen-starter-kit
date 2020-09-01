@@ -35,6 +35,7 @@ def custom_ppo_surrogate_loss(policy, model, dist_class, train_batch):
         vf_clip_param=policy.config["vf_clip_param"],
         vf_loss_coeff=policy.config["vf_loss_coeff"],
         use_gae=policy.config["use_gae"],
+        kl_target=policy.config['kl_target'],
     )
 
     return policy.loss_obj.loss
@@ -58,7 +59,8 @@ class CustomPPOLoss:
                  clip_param=0.1,
                  vf_clip_param=0.1,
                  vf_loss_coeff=1.0,
-                 use_gae=True):
+                 use_gae=True,
+                 kl_target=0.01):
         """Constructs the loss for Proximal Policy Objective.
 
         Arguments:
@@ -100,10 +102,10 @@ class CustomPPOLoss:
 
         prev_dist = dist_class(prev_logits, model)
         # Make loss functions.
-        logp_ratio = tf.exp(curr_action_dist.logp(actions) - prev_actions_logp)
         action_kl = prev_dist.kl(curr_action_dist)
         self.mean_kl = reduce_mean_valid(action_kl)
 
+        logp_ratio = tf.exp(curr_action_dist.logp(actions) - prev_actions_logp)
         curr_entropy = curr_action_dist.entropy()
         self.mean_entropy = reduce_mean_valid(curr_entropy)
 
@@ -114,13 +116,15 @@ class CustomPPOLoss:
         self.mean_policy_loss = reduce_mean_valid(-surrogate_loss)
 
         if use_gae:
-            vf_loss1 = tf.square(value_fn - value_targets)
-            # vf_loss1 = tf.abs(value_fn - value_targets)
-            vf_clipped = vf_preds + tf.clip_by_value(
-                value_fn - vf_preds, -vf_clip_param, vf_clip_param)
-            vf_loss2 = tf.square(vf_clipped - value_targets)
+            # vf_loss1 = tf.square(value_fn - value_targets)
+            vf_loss1 = tf.abs(value_fn - value_targets)
+            # vf_clipped = vf_preds + tf.clip_by_value(
+            #     value_fn - vf_preds, -vf_clip_param, vf_clip_param)
+            # vf_loss2 = tf.square(vf_clipped - value_targets)
             # vf_loss2 = tf.abs(vf_clipped - value_targets)
-            vf_loss = tf.maximum(vf_loss1, vf_loss2)
+            vf_loss = vf_loss1
+            # vf_loss = tf.maximum(vf_loss1, vf_loss2)
+            # self.mean_vf_loss = reduce_mean_valid(vf_loss)
             self.mean_vf_loss = reduce_mean_valid(vf_loss)
             loss = reduce_mean_valid(
                 -surrogate_loss + cur_kl_coeff * action_kl +
