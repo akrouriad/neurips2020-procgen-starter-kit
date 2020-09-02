@@ -125,7 +125,7 @@ class TVRLPolicy(Policy):
         init_params = self.model.get_state_dict_clone()
 
         for pg in self.optim.param_groups:
-            pg['lr'] = self.lr * self.lr_scaling
+            pg['lr'] = self.lr * self.lr_scaling / max(self.rwd_scale, 1e-2)
 
         for epoch in range(self.nb_epochs):
             for batch_idx in next_batch_idx(self.sgd_minibatch_size, len(samples['rewards'])):
@@ -136,8 +136,8 @@ class TVRLPolicy(Policy):
                 prob_ratio = torch.exp(new_logp - old_logp[batch_idx])
                 loss_p_clamp = torch.min(prob_ratio * a_targ[batch_idx],
                                         torch.clamp(prob_ratio, min=1 - 2 * self.cst_fct.tv_max, max=1 + 2 * self.cst_fct.tv_max) * a_targ[batch_idx])
-                loss_p = -torch.mean(loss_p_clamp) / max(self.rwd_scale, 1e-2)
-                loss_v = self.lossf_v(self.model._value, v_targ[batch_idx]) / max(self.rwd_scale, 1e-2)
+                loss_p = -torch.mean(loss_p_clamp)
+                loss_v = self.lossf_v(self.model._value, v_targ[batch_idx])
                 (loss_p + loss_v).backward()
                 self.optim.step()
 
@@ -166,7 +166,7 @@ class TVRLPolicy(Policy):
                     break
                 self.model.soft_weight_set(optim_param, init_params, stepsize)
                 avg_tv_val = cst_fct_model(self.model) + self.tv_max
-                if avg_tv_val <= self.tv_max:
+                if avg_tv_val <= 1.5 * self.tv_max:
                     found_valid = True
                     new_loss = loss_fc_ls(self.model)
                     if new_loss <= best_loss:
@@ -184,11 +184,11 @@ class TVRLPolicy(Policy):
                 self.model.load_state_dict(init_params)
 
         self.soft_stepsize += .5 * (best_stepsize - self.soft_stepsize)
-        if self.soft_stepsize < .85:
+        if self.soft_stepsize < 1. or best_avg_tv_val > self.tv_max:
             self.lr_scaling *= .7
         elif best_avg_tv_val < .7 * self.tv_max:
             self.lr_scaling *= 1.1
-        self.lr_scaling = min(max(self.lr_scaling, 1e-3), 20.)
+        self.lr_scaling = min(max(self.lr_scaling, 1e-3), 1.)
 
         print('sz {:3.2f} lrs {} lr {:3.6f} tv {:3.2f}; target_lam {:3.2f} target_entropy {}; ts {}'.
               format(best_stepsize, self.lr_scaling, self.optim.param_groups[0]['lr'], best_avg_tv_val, self.lambda_profile.get_target(),
