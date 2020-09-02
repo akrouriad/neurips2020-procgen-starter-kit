@@ -38,14 +38,14 @@ procgen-starter-example:
 #    device: 'cpu'
     exploration_time: .85
     entrop_min_init_ratio: .1
-    entrop_tsallis_init_ratio: .9
+    entrop_tsallis_init_ratio: .4
     timesteps_total: *timesteps_total
 
     # training settings
     lr: 5.0e-4
     gamma: .999
     lambda: .95
-    lambda_final: .5
+    lambda_final: .95
     tv_max: .1
     sgd_minibatch_size: 64
     nb_sgd_epochs: 10
