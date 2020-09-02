@@ -3,5 +3,6 @@
       "grader_id": "evaluations-api-neurips-2020-procgen",
       "authors" : ["akrouriad"],
       "description" : "NeurIPS 2020: Procgen Competition Agent",
-      "debug" : false
+      "debug" : false,
+      "docker_build": true
  }

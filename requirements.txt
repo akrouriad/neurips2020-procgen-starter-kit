@@ -3,3 +3,4 @@ procgen==0.10.3
 tensorflow==2.1.0
 mlflow==1.8.0
 boto3==1.13.10
+torch==1.3.1
