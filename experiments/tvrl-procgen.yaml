@@ -1,6 +1,6 @@
 procgen-starter-example:
-  env: procgen_env_wrapper  # Change this at your own risk :D
-#  env: procgen_diffobs_env_wrapper  # Change this at your own risk :D
+#  env: procgen_env_wrapper  # Change this at your own risk :D
+  env: procgen_diffobs_env_wrapper  # Change this at your own risk :D
 #  env: procgen_inchan_env_wrapper  # Change this at your own risk :D
 #  env: LunarLander-v2  # Change this at your own risk :D
   run: TVRL
