@@ -186,9 +186,9 @@ class TVRLPolicy(Policy):
         self.soft_stepsize += .5 * (best_stepsize - self.soft_stepsize)
         if self.soft_stepsize < .85:
             self.lr_scaling *= .7
-        elif best_avg_tv_val < .9 * self.tv_max:
+        elif best_avg_tv_val < .7 * self.tv_max:
             self.lr_scaling *= 1.1
-        self.lr_scaling = min(max(self.lr_scaling, 1e-3), 1.)
+        self.lr_scaling = min(max(self.lr_scaling, 1e-3), 20.)
 
         print('sz {:3.2f} lrs {} lr {:3.6f} tv {:3.2f}; target_lam {:3.2f} target_entropy {}; ts {}'.
               format(best_stepsize, self.lr_scaling, self.optim.param_groups[0]['lr'], best_avg_tv_val, self.lambda_profile.get_target(),
