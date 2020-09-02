@@ -205,4 +205,3 @@ class TVRLPolicy(Policy):
             eproj.entropy_profile.set_phase(self.phase)
         self.lambda_profile.set_phase(self.phase)
 
-
