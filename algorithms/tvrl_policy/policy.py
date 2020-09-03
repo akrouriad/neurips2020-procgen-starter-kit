@@ -6,6 +6,7 @@ from models.tvrl_mlp_torch import MLPPolicy
 import numpy as np
 import time
 import torch
+from ray.rllib.policy.sample_batch import SampleBatch
 
 
 class CstAvgTV:
@@ -47,6 +48,8 @@ class TVRLPolicy(Policy):
         self.lossf_v = torch.nn.L1Loss()
         self.nb_epochs = config['nb_sgd_epochs']
         self.soft_stepsize = 1
+        self.last_batch = []
+        self.nb_stored_iters = config['nb_stored_iters']
 
     def get_targets(self, v_values, v_values_next, rwd, last_from_ep):
         gen_adv = np.zeros_like(v_values)
@@ -92,6 +95,27 @@ class TVRLPolicy(Policy):
         return action_batch, [], info
 
     def learn_on_batch(self, samples):
+        # building replay memory
+        if self.nb_stored_iters > 1:
+            if self.last_batch:
+                sample_per_iter = samples.count
+                old_samples = self.last_batch.slice(-sample_per_iter * (self.nb_stored_iters - 1), self.nb_stored_iters * sample_per_iter)
+                # recompute v_vals, old_logp and old_probs from new policy
+                with torch.no_grad():
+                    split_count = 2000
+                    for k in range(int(np.ceil(old_samples.count / split_count))):
+                        old_obs = torch.tensor(old_samples['obs'][k * split_count:(k+1) * split_count], device=self.device)
+                        old_act = torch.tensor(old_samples['actions'][k * split_count:(k + 1) * split_count, None], dtype=torch.long, device=self.device)
+                        self.model.forward(old_obs)
+                        old_samples['v_vals'][k * split_count:(k+1) * split_count] = self.model._value.clone().squeeze_(1).cpu().numpy()
+                        act_dist = torch.distributions.Categorical(probs=self.model._probs)
+                        old_samples['old_logp'][k * split_count:(k + 1) * split_count] = act_dist.logits.gather(dim=1, index=old_act).squeeze(1).cpu().numpy()
+                        old_samples['old_probs'][k * split_count:(k + 1) * split_count] = act_dist.probs.cpu().numpy()
+
+                samples = old_samples.concat(samples)
+            self.last_batch = samples
+        print(samples.count)
+
         # implement your learning code here
         with torch.no_grad():
             # computing v_vals of next state
@@ -127,18 +151,30 @@ class TVRLPolicy(Policy):
         for pg in self.optim.param_groups:
             pg['lr'] = self.lr * self.lr_scaling
 
+        def tv_max_interpol(p, q, tv_max):
+            etas = tv_max / (.5 * torch.sum(torch.abs(p - q), dim=1, keepdim=True))
+            return etas * p + (1 - etas) * q
+
         for epoch in range(self.nb_epochs):
             for batch_idx in next_batch_idx(self.sgd_minibatch_size, len(samples['rewards'])):
                 self.optim.zero_grad()
                 probs = self.model.forward(obs[batch_idx])
-                new_dist = torch.distributions.Categorical(probs=probs)
-                new_logp = new_dist.logits.gather(dim=1, index=act[batch_idx])
-                prob_ratio = torch.exp(new_logp - old_logp[batch_idx])
-                loss_p_clamp = torch.min(prob_ratio * a_targ[batch_idx],
-                                        torch.clamp(prob_ratio, min=1 - 2 * self.cst_fct.tv_max, max=1 + 2 * self.cst_fct.tv_max) * a_targ[batch_idx])
+                adv_all = self.model._adv.detach()
+                # new_dist = torch.distributions.Categorical(probs=probs)
+                # new_logp = new_dist.logits.gather(dim=1, index=act[batch_idx])
+                # prob_ratio = torch.exp(new_logp - old_logp[batch_idx])
+                # loss_p_clamp = torch.min(prob_ratio * a_targ[batch_idx],
+                #                         torch.clamp(prob_ratio, min=1 - 2 * self.cst_fct.tv_max, max=1 + 2 * self.cst_fct.tv_max) * a_targ[batch_idx])
+                prob_outside = .5 * torch.sum(torch.abs(probs - old_probs[batch_idx]), dim=1) > 2 * self.cst_fct.tv_max
+                loss_p_out = torch.ones(len(batch_idx), device=self.device) * np.inf
+                with torch.no_grad():
+                    clamped_probs = tv_max_interpol(probs[prob_outside], old_probs[batch_idx][prob_outside], self.cst_fct.tv_max)
+                    loss_p_out[prob_outside] = torch.sum(clamped_probs * adv_all[prob_outside], dim=1)
+                loss_p_clamp = torch.min(torch.sum(probs * adv_all, dim=1), loss_p_out)
                 loss_p = -torch.mean(loss_p_clamp) / max(self.rwd_scale, 1e-2)
                 loss_v = self.lossf_v(self.model._value, v_targ[batch_idx]) / max(self.rwd_scale, 1e-2)
-                (loss_p + loss_v).backward()
+                loss_a = self.lossf_v(self.model._adv.gather(dim=1, index=act[batch_idx]), a_targ[batch_idx]) / max(self.rwd_scale, 1e-2)
+                (loss_p + loss_v + loss_a).backward()
                 self.optim.step()
 
         ls_idx = np.random.choice(len(samples['rewards']), min(len(samples['rewards']), 500), replace=False)

@@ -15,7 +15,7 @@ procgen-starter-example:
 
   config:
     env_config:
-      env_name: bigfish
+      env_name: coinrun
       num_levels: 0
       start_level: 0
       paint_vel_info: False
@@ -53,4 +53,5 @@ procgen-starter-example:
     lambda_final: .95
     tv_max: .1
     sgd_minibatch_size: 512
-    nb_sgd_epochs: 3
+    nb_sgd_epochs: 1
+    nb_stored_iters: 3

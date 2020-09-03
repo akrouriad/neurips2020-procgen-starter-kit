@@ -53,4 +53,5 @@ procgen-starter-example:
     lambda_final: .95
     tv_max: .1
     sgd_minibatch_size: 64
-    nb_sgd_epochs: 3
+    nb_sgd_epochs: 1
+    nb_stored_iters: 3

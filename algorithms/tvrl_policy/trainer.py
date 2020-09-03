@@ -17,6 +17,7 @@ DEFAULT_CONFIG = COMMON_CONFIG.update(
         'lambda': .95,
         'sgd_minibatch_size': 64,
         'nb_sgd_epochs': 3,
+        'nb_stored_iters': 1,
      }
 )  # Default config parameters that can be overriden by experiments YAML.
 
