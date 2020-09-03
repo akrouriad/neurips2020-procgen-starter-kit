@@ -6,6 +6,7 @@ from models.tvrl_mlp_torch import MLPPolicy
 import numpy as np
 import time
 import torch
+from ray.rllib.policy.sample_batch import SampleBatch
 
 
 class CstAvgTV:
@@ -47,6 +48,8 @@ class TVRLPolicy(Policy):
         self.lossf_v = torch.nn.L1Loss()
         self.nb_epochs = config['nb_sgd_epochs']
         self.soft_stepsize = 1
+        self.last_batch = []
+        self.nb_stored_iters = config['nb_stored_iters']
 
     def get_targets(self, v_values, v_values_next, rwd, last_from_ep):
         gen_adv = np.zeros_like(v_values)
@@ -84,33 +87,45 @@ class TVRLPolicy(Policy):
     ):
         with torch.no_grad():
             self.model.forward(torch.tensor(np.stack(obs_batch), device=self.device))
-            action_batch = torch.distributions.Categorical(probs=self.model._probs).sample().cpu().numpy()
-            info = {'v_vals': self.model._value.clone().squeeze_(1).cpu().numpy(), 'probs': self.model._probs.clone().cpu().numpy()}
-
+            act_dist = torch.distributions.Categorical(probs=self.model._probs)
+            action_batch = act_dist.sample()
+            old_logp = act_dist.logits.gather(dim=1, index=action_batch.unsqueeze(1)).squeeze(1)
+            info = {'v_vals': self.model._value.clone().squeeze_(1).cpu().numpy(), 'old_logp': old_logp.cpu().numpy(), 'old_probs': act_dist.probs.cpu().numpy()}
+            action_batch = action_batch.cpu().numpy()
         return action_batch, [], info
 
     def learn_on_batch(self, samples):
+        # building replay memory
+        if self.nb_stored_iters > 1:
+            if self.last_batch:
+                sample_per_iter = samples.count
+                old_samples = self.last_batch.slice(-sample_per_iter * (self.nb_stored_iters - 1), self.nb_stored_iters * sample_per_iter)
+                # recompute v_vals, old_logp and old_probs from new policy
+                with torch.no_grad():
+                    split_count = 2000
+                    for k in range(int(np.ceil(old_samples.count / split_count))):
+                        old_obs = torch.tensor(old_samples['obs'][k * split_count:(k+1) * split_count], device=self.device)
+                        old_act = torch.tensor(old_samples['actions'][k * split_count:(k + 1) * split_count, None], dtype=torch.long, device=self.device)
+                        self.model.forward(old_obs)
+                        old_samples['v_vals'][k * split_count:(k+1) * split_count] = self.model._value.clone().squeeze_(1).cpu().numpy()
+                        act_dist = torch.distributions.Categorical(probs=self.model._probs)
+                        old_samples['old_logp'][k * split_count:(k + 1) * split_count] = act_dist.logits.gather(dim=1, index=old_act).squeeze(1).cpu().numpy()
+                        old_samples['old_probs'][k * split_count:(k + 1) * split_count] = act_dist.probs.cpu().numpy()
+
+                samples = old_samples.concat(samples)
+            self.last_batch = samples
+        print(samples.count)
+
         # implement your learning code here
         with torch.no_grad():
             # computing v_vals of next state
             v_vals_next, last_from_ep = self.get_v_vals_next(samples)
 
-            # scaling rewards
-            # old_rwd_scale = self.rwd_scale
-            rwd_scale_lr = .3
-            # self.rwd_scale = rwd_scale_lr * np.std(samples['rewards']) + (1 - rwd_scale_lr) * self.rwd_scale
-            # self.rwd_scale = max(np.std(samples['v_vals']), 1e-3)
-            # print(self.rwd_scale)
-            # rwd = samples['rewards'] / self.rwd_scale
-            # v_vals = samples['v_vals'] * old_rwd_scale / self.rwd_scale
-            # v_vals_next *= old_rwd_scale / self.rwd_scale
-
             # computing targets
-            # v_targ, a_targ = self.get_targets(v_vals, v_vals_next, rwd, last_from_ep)
-            # v_targ, a_targ = self.get_targets(samples['v_vals'], v_vals_next, samples['rewards'] / max(self.rwd_scale, 1e-2), last_from_ep)
             v_targ, a_targ = self.get_targets(samples['v_vals'], v_vals_next, samples['rewards'], last_from_ep)
-            self.rwd_scale = rwd_scale_lr * np.std(v_targ) + (1 - rwd_scale_lr) * self.rwd_scale
-            # self.rwd_scale = 1.
+            rwd_scale_lr = .3
+            # self.rwd_scale = rwd_scale_lr * np.std(v_targ) + (1 - rwd_scale_lr) * self.rwd_scale
+            self.rwd_scale = rwd_scale_lr * np.mean(np.abs(v_targ)) + (1 - rwd_scale_lr) * self.rwd_scale
             print(self.rwd_scale)
 
             # updating number of samples and entropy profiles before update
@@ -124,106 +139,93 @@ class TVRLPolicy(Policy):
 
         obs = torch.tensor(samples['obs'], device=self.device)
         act = torch.tensor(samples['actions'], dtype=torch.long, device=self.device).unsqueeze(1)
-        old_probs = torch.tensor(samples['probs'], device=self.device)
+        old_logp = torch.tensor(samples['old_logp'], device=self.device).unsqueeze(1)
+        old_probs = torch.tensor(samples['old_probs'], device=self.device)
         v_targ = torch.tensor(v_targ, device=self.device).unsqueeze(1)
         a_targ = torch.tensor(a_targ, device=self.device).unsqueeze(1)
-        # a_targ = (a_targ - torch.mean(a_targ)) / max(torch.std(a_targ), 1e-4)
 
-        def tv_proj_probs(p, q, scale, cst_fc):
-            hx = cst_fc(p, q)
-            if hx > 0:
-                eta = 1 / (1 + hx / scale)
-                return eta * p + (1 - eta) * q, eta, hx
-            else:
-                return p, torch.tensor(1., device=self.device), hx
+        # a_targ -= torch.mean(a_targ)
 
         init_params = self.model.get_state_dict_clone()
+
+        for pg in self.optim.param_groups:
+            pg['lr'] = self.lr * self.lr_scaling
+
+        def tv_max_interpol(p, q, tv_max):
+            etas = tv_max / (.5 * torch.sum(torch.abs(p - q), dim=1, keepdim=True))
+            return etas * p + (1 - etas) * q
 
         for epoch in range(self.nb_epochs):
             for batch_idx in next_batch_idx(self.sgd_minibatch_size, len(samples['rewards'])):
                 self.optim.zero_grad()
                 probs = self.model.forward(obs[batch_idx])
-                # clipped_probs = torch.min(torch.max(probs, old_probs[batch_idx] - self.tv_max), old_probs[batch_idx] + self.tv_max)
-                # loss_p_proj = torch.min(torch.sum(clipped_probs * self.model._adv.detach(), dim=1), torch.sum(probs * self.model._adv.detach(), dim=1))
-                act_probs = probs.gather(dim=1, index=act[batch_idx])
-                old_act_probs = old_probs[batch_idx].gather(dim=1, index=act[batch_idx])
-                prob_ratio = act_probs / old_act_probs
-                loss_p_proj = torch.min(prob_ratio * a_targ[batch_idx],
-                                        torch.clamp(prob_ratio, min=1 - 2 * self.cst_fct.tv_max, max=1 + 2 * self.cst_fct.tv_max) * a_targ[batch_idx])
-                # projected_probs, eta, tv_cst = tv_proj_probs(probs, old_probs[batch_idx], self.cst_fct.tv_max, self.cst_fct)
-                # loss_p_proj = projected_probs.gather(dim=1, index=act[batch_idx]) * a_targ[batch_idx]
-                # loss_p_proj = torch.sum(projected_probs * self.model._adv.detach(), dim=1)
-                # loss_p_proj = torch.sum(probs * self.model._adv.detach(), dim=1)
-                # loss_p_proj = torch.min(torch.sum(projected_probs * self.model._adv.detach(), dim=1), torch.sum(probs * self.model._adv.detach(), dim=1))
-                # loss_p_unproj = torch.sum(self.model._probs * self.model._adv.detach(), dim=1)
-                # loss_p = -torch.mean(torch.min(loss_p_proj, loss_p_unproj)) / eta.detach()
-                # loss_p = (-torch.mean(loss_p_proj) / self.rwd_scale + max(tv_cst, 0) / self.lr_scaling)
-                loss_p = (-torch.mean(loss_p_proj) / self.rwd_scale)
-                # loss_a = self.lossf_v(self.model._adv.gather(dim=1, index=act[batch_idx]), a_targ[batch_idx]) / self.rwd_scale
-                loss_v = self.lossf_v(self.model._value, v_targ[batch_idx]) / self.rwd_scale
-                # (loss_p + loss_v + loss_a).backward()
-                # loss_p = -torch.mean(projected_probs.gather(dim=1, index=act[batch_idx]) * a_targ[batch_idx] / old_probs[batch_idx]) #/ eta.detach()
-                # loss_v = self.lossf_v(self.model._value, v_targ[batch_idx]) #/ eta.detach()
-                (loss_p + loss_v).backward()
-                # torch.nn.utils.clip_grad_norm_(self.model.parameters(), .5)
+                adv_all = self.model._adv.detach()
+                # new_dist = torch.distributions.Categorical(probs=probs)
+                # new_logp = new_dist.logits.gather(dim=1, index=act[batch_idx])
+                # prob_ratio = torch.exp(new_logp - old_logp[batch_idx])
+                # loss_p_clamp = torch.min(prob_ratio * a_targ[batch_idx],
+                #                         torch.clamp(prob_ratio, min=1 - 2 * self.cst_fct.tv_max, max=1 + 2 * self.cst_fct.tv_max) * a_targ[batch_idx])
+                prob_outside = .5 * torch.sum(torch.abs(probs - old_probs[batch_idx]), dim=1) > 2 * self.cst_fct.tv_max
+                loss_p_out = torch.ones(len(batch_idx), device=self.device) * np.inf
+                with torch.no_grad():
+                    clamped_probs = tv_max_interpol(probs[prob_outside], old_probs[batch_idx][prob_outside], self.cst_fct.tv_max)
+                    loss_p_out[prob_outside] = torch.sum(clamped_probs * adv_all[prob_outside], dim=1)
+                loss_p_clamp = torch.min(torch.sum(probs * adv_all, dim=1), loss_p_out)
+                loss_p = -torch.mean(loss_p_clamp) / max(self.rwd_scale, 1e-2)
+                loss_v = self.lossf_v(self.model._value, v_targ[batch_idx]) / max(self.rwd_scale, 1e-2)
+                loss_a = self.lossf_v(self.model._adv.gather(dim=1, index=act[batch_idx]), a_targ[batch_idx]) / max(self.rwd_scale, 1e-2)
+                (loss_p + loss_v + loss_a).backward()
                 self.optim.step()
+
         ls_idx = np.random.choice(len(samples['rewards']), min(len(samples['rewards']), 500), replace=False)
-        with torch.no_grad():
-            self.model.forward(obs[ls_idx])
-            adv_values_new = self.model._adv.clone()
 
         def loss_fc_ls(model):
-            new_probs = model.forward(obs[ls_idx])
-            return -torch.mean(torch.sum(new_probs * adv_values_new, dim=1))
+            new_probs = model.forward(obs[ls_idx]).gather(dim=1, index=act[ls_idx])
+            return -torch.mean(new_probs * a_targ[ls_idx])
 
         def cst_fct_model(model):
             new_probs = model.forward(obs[ls_idx])
             return self.cst_fct(new_probs, old_probs[ls_idx])
 
-        # # check constraint and do line search eventually
-        # with torch.no_grad():
-        #     best_stepsize = 1.
-        #     best_avg_tv_val = np.inf
-        #     best_loss = np.inf
-        #     lower_bound = 0.
-        #     upper_bound = 2.
-        #     upper_init = False
-        #     optim_param = self.model.get_state_dict_clone()
-        #     found_valid = False
-        #     for _ in range(10):
-        #         stepsize = (upper_bound + lower_bound) / 2
-        #         self.model.soft_weight_set(optim_param, init_params, stepsize)
-        #         avg_tv_val = cst_fct_model(self.model) + self.tv_max
-        #         if avg_tv_val <= 1.5 * self.tv_max:
-        #             found_valid = True
-        #             new_loss = loss_fc_ls(self.model)
-        #             if new_loss <= best_loss:
-        #                 best_loss = new_loss
-        #                 best_stepsize = stepsize
-        #                 best_avg_tv_val = avg_tv_val
-        #             # if not upper_init:
-        #             #     upper_bound *= 2
-        #             lower_bound = stepsize
-        #         else:
-        #             upper_bound = stepsize
-        #             upper_init = True
-        #     if found_valid:
-        #         self.model.soft_weight_set(optim_param, init_params, best_stepsize)
-        #     else:
-        #         best_stepsize = 0.
-        #         self.model.load_state_dict(init_params)
-        #
-        # self.soft_stepsize += .5 * (best_stepsize - self.soft_stepsize)
-        # if self.soft_stepsize < .85:
-        #     self.lr_scaling *= .7
-        # elif best_avg_tv_val < .9 * self.tv_max:
-        #     # self.lr_scaling *= 1.1
-        #     self.lr_scaling *= 1.5
-        # for pg in self.optim.param_groups:
-        #     pg['lr'] = self.lr * min(max(self.lr_scaling, 1e-3), 1.)
+        # check constraint and do line search eventually
+        with torch.no_grad():
+            best_stepsize = 1.
+            best_avg_tv_val = np.inf
+            best_loss = np.inf
+            lower_bound = 0.
+            upper_bound = 2.
+            optim_param = self.model.get_state_dict_clone()
+            found_valid = False
+            for _ in range(10):
+                stepsize = (upper_bound + lower_bound) / 2
+                if stepsize > 1:
+                    break
+                self.model.soft_weight_set(optim_param, init_params, stepsize)
+                avg_tv_val = cst_fct_model(self.model) + self.tv_max
+                if avg_tv_val <= self.tv_max:
+                    found_valid = True
+                    new_loss = loss_fc_ls(self.model)
+                    if new_loss <= best_loss:
+                        best_loss = new_loss
+                        best_stepsize = stepsize
+                        best_avg_tv_val = avg_tv_val
+                    lower_bound = stepsize
+                else:
+                    upper_bound = stepsize
 
-        best_avg_tv_val = cst_fct_model(self.model) + self.tv_max
-        best_stepsize = 1.
+            if found_valid:
+                self.model.soft_weight_set(optim_param, init_params, best_stepsize)
+            else:
+                best_stepsize = 0.
+                self.model.load_state_dict(init_params)
+
+        self.soft_stepsize += .5 * (best_stepsize - self.soft_stepsize)
+        if self.soft_stepsize < .85:
+            self.lr_scaling *= .7
+        elif best_avg_tv_val < .9 * self.tv_max:
+            self.lr_scaling *= 1.1
+        self.lr_scaling = min(max(self.lr_scaling, 1e-3), 1.)
+
         print('sz {:3.2f} lrs {} lr {:3.6f} tv {:3.2f}; target_lam {:3.2f} target_entropy {}; ts {}'.
               format(best_stepsize, self.lr_scaling, self.optim.param_groups[0]['lr'], best_avg_tv_val, self.lambda_profile.get_target(),
                      [eproj.entropy_profile.get_target() for eproj in self.model.entropy_projs], self.nb_learning_samples))

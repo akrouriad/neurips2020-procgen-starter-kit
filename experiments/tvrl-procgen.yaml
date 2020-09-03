@@ -41,8 +41,8 @@ procgen-starter-example:
     device: 'cuda'
 #    device: 'cpu'
     exploration_time: .8
-    entrop_min_init_ratio: .1
-    entrop_tsallis_init_ratio: .4
+    entrop_min_init_ratio: .3
+    entrop_tsallis_init_ratio: .8
     timesteps_total: 8000000
 
     # training settings
@@ -50,8 +50,8 @@ procgen-starter-example:
 #    lr: 1.0e-3
     gamma: .999
     lambda: .95
-    lambda_final: .95
+    lambda_final: .5
     tv_max: .1
     sgd_minibatch_size: 512
     nb_sgd_epochs: 1
-    nb_stored_iters: 3
+    nb_stored_iters: 5
