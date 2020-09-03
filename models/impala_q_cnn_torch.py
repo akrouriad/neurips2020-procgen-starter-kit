@@ -149,9 +149,9 @@ class ImpalaCNN(nn.Module):
 
     def forward(self, x):
         self.compute_features(x)
-        self._adv = self.logits_fc(self._features)
-        self._value = self.value_fc(self._features)
-        # logits_unproj = torch.exp(self.temp_mult) * torch.clamp_min(self.temp_fc(self._features), 1) * self._adv
+        self._adv = self.logits_fc(self._features) * self.temp_mult + 2
+        self._value = self.value_fc(self._features) * self.temp_mult
+        self._q = self._adv + self._value
         logits_unproj = torch.clamp_min(self.temp_fc(self._features), 1) * self._adv
         probs = torch.softmax(logits_unproj, dim=-1)
         for eproj in self.entropy_projs:
@@ -160,8 +160,8 @@ class ImpalaCNN(nn.Module):
         return probs
 
     def get_v_from_obs(self, x):
-        self.compute_features(x)
-        return self.value_fc(self._features)
+        self.forward(x)
+        return torch.max(self._q, dim=1)[0]
 
     def get_state_dict_clone(self):
         w = self.state_dict()

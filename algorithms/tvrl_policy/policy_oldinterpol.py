@@ -1,8 +1,7 @@
 #!/usr/bin/env python
 
 from ray.rllib.policy import Policy
-from models.impala_q_cnn_torch import ImpalaCNN
-from models.impala_tvrl_cnn_torch import LinearProfile
+from models.impala_tvrl_cnn_torch import ImpalaCNN, LinearProfile
 from models.tvrl_mlp_torch import MLPPolicy
 import numpy as np
 import time
@@ -36,6 +35,7 @@ class TVRLPolicy(Policy):
         self.lr = config['lr']
         self.optim = torch.optim.Adam(self.model.parameters(), lr=self.lr)
         self.discount = config['gamma']
+        self.lambda_profile = LinearProfile(config['lambda'], config['lambda_final'], x1=1.)
         self.tv_max = config['tv_max']
         self.cst_fct = CstAvgTV(self.tv_max)
         self.rwd_scale = 1.
@@ -50,21 +50,29 @@ class TVRLPolicy(Policy):
         self.last_batch = []
         self.nb_stored_iters = config['nb_stored_iters']
 
-    def get_targets(self, v_values_next, rwd):
-        return rwd + self.discount * v_values_next
+    def get_targets(self, v_values, v_values_next, rwd, last_from_ep):
+        gen_adv = np.zeros_like(v_values)
+        k = len(gen_adv) - 1
+        lam = self.lambda_profile.get_target()
+        for v, vn, r, new in zip(reversed(v_values), reversed(v_values_next), reversed(rwd), reversed(last_from_ep)):
+            if new:
+                gen_adv[k] = r + self.discount * vn - v
+            else:
+                gen_adv[k] = r + self.discount * vn - v + self.discount * lam * gen_adv[k + 1]
+            k -= 1
+        return gen_adv + v_values, gen_adv
 
     def get_v_vals_next(self, samples):
-        v_vals = np.max(samples['q_vals'], axis=1)
-        v_vals_next = np.zeros_like(v_vals)
-        v_vals_next[:-1] = v_vals[1:]  # most of the time, v_vals next is v_vals of next obs in dataset
+        v_vals_next = np.zeros_like(samples['v_vals'])
+        v_vals_next[:-1] = samples['v_vals'][1:]  # most of the time, v_vals next is v_vals of next obs in dataset
         v_vals_next[samples['dones']] = 0.  # unless it is a terminal state
 
         last_from_ep = np.array([True] * len(samples['rewards']))  # check when traj segments switch to new ep
         last_from_ep[:-1] = (samples['eps_id'][:-1] - samples['eps_id'][1:]) != 0  # which is true when next eps id and current are not the same
         compute_v_next = last_from_ep & ~samples['dones']  # compute v_vals in these states using new_obs, unless it is a terminal state
         with torch.no_grad():
-            v_vals_next[compute_v_next] = self.model.get_v_from_obs(torch.tensor(samples['new_obs'][compute_v_next], device=self.device)).cpu().numpy()
-        return v_vals_next
+            v_vals_next[compute_v_next] = self.model.get_v_from_obs(torch.tensor(samples['new_obs'][compute_v_next], device=self.device)).cpu().numpy().squeeze(1)
+        return v_vals_next, last_from_ep
 
     def compute_actions(
         self,
@@ -78,9 +86,8 @@ class TVRLPolicy(Policy):
     ):
         with torch.no_grad():
             self.model.forward(torch.tensor(np.stack(obs_batch), device=self.device))
-            # action_batch = torch.distributions.Categorical(probs=self.model._probs).sample().cpu().numpy()
-            action_batch = torch.argmax(self.model._q + torch.randn(self.model._q.shape, device=self.device) * 0.01, dim=1).cpu().numpy()
-            info = {'q_vals': self.model._q.clone().squeeze_(1).cpu().numpy(), 'old_probs': self.model._probs.clone().cpu().numpy()}
+            action_batch = torch.distributions.Categorical(probs=self.model._probs).sample().cpu().numpy()
+            info = {'v_vals': self.model._value.clone().squeeze_(1).cpu().numpy(), 'old_probs': self.model._probs.clone().cpu().numpy()}
 
         return action_batch, [], info
 
@@ -96,7 +103,7 @@ class TVRLPolicy(Policy):
                     for k in range(int(np.ceil(old_samples.count / split_count))):
                         old_obs = torch.tensor(old_samples['obs'][k * split_count:(k+1) * split_count], device=self.device)
                         self.model.forward(old_obs)
-                        old_samples['q_vals'][k * split_count:(k+1) * split_count] = self.model._q.clone().squeeze_(1).cpu().numpy()
+                        old_samples['v_vals'][k * split_count:(k+1) * split_count] = self.model._value.clone().squeeze_(1).cpu().numpy()
                         old_samples['old_probs'][k * split_count:(k + 1) * split_count] = self.model._probs.cpu().numpy()
 
                 samples = old_samples.concat(samples)
@@ -106,13 +113,25 @@ class TVRLPolicy(Policy):
         # implement your learning code here
         with torch.no_grad():
             # computing v_vals of next state
-            v_vals_next = self.get_v_vals_next(samples)
+            v_vals_next, last_from_ep = self.get_v_vals_next(samples)
 
             # scaling rewards
-            q_targ = samples['rewards'] + self.discount * v_vals_next
+            # old_rwd_scale = self.rwd_scale
             rwd_scale_lr = .3
-            # self.rwd_scale = rwd_scale_lr * np.mean(np.abs(q_targ)) + (1 - rwd_scale_lr) * self.rwd_scale
-            self.rwd_scale = 1.
+            # self.rwd_scale = rwd_scale_lr * np.std(samples['rewards']) + (1 - rwd_scale_lr) * self.rwd_scale
+            # self.rwd_scale = max(np.std(samples['v_vals']), 1e-3)
+            # print(self.rwd_scale)
+            # rwd = samples['rewards'] / self.rwd_scale
+            # v_vals = samples['v_vals'] * old_rwd_scale / self.rwd_scale
+            # v_vals_next *= old_rwd_scale / self.rwd_scale
+
+            # computing targets
+            # v_targ, a_targ = self.get_targets(v_vals, v_vals_next, rwd, last_from_ep)
+            # v_targ, a_targ = self.get_targets(samples['v_vals'], v_vals_next, samples['rewards'] / max(self.rwd_scale, 1e-2), last_from_ep)
+            self.rwd_scale = max(np.std(samples['rewards']), 1e-2)
+            v_targ, a_targ = self.get_targets(samples['v_vals'], v_vals_next, samples['rewards'] / self.rwd_scale, last_from_ep)
+            # self.rwd_scale = rwd_scale_lr * np.std(v_targ) + (1 - rwd_scale_lr) * self.rwd_scale
+            # self.rwd_scale = 1.
             print(self.rwd_scale)
 
             # updating number of samples and entropy profiles before update
@@ -121,11 +140,15 @@ class TVRLPolicy(Policy):
             self.phase = self.nb_learning_samples / self.timesteps_total
             for eproj in self.model.entropy_projs:
                 eproj.entropy_profile.set_phase(self.phase)
+            self.lambda_profile.set_phase(self.phase)
+
 
         obs = torch.tensor(samples['obs'], device=self.device)
         act = torch.tensor(samples['actions'], dtype=torch.long, device=self.device).unsqueeze(1)
         old_probs = torch.tensor(samples['old_probs'], device=self.device)
-        q_targ = torch.tensor(q_targ, device=self.device).unsqueeze(1)
+        v_targ = torch.tensor(v_targ, device=self.device).unsqueeze(1)
+        a_targ = torch.tensor(a_targ, device=self.device).unsqueeze(1)
+        # a_targ = (a_targ - torch.mean(a_targ)) / max(torch.std(a_targ), 1e-4)
 
         def tv_proj_probs(p, q, scale, cst_fc):
             hx = cst_fc(p, q)
@@ -148,22 +171,23 @@ class TVRLPolicy(Policy):
                 # prob_ratio = act_probs / old_act_probs
                 # loss_p_proj = torch.min(prob_ratio * a_targ[batch_idx],
                 #                         torch.clamp(prob_ratio, min=1 - 2 * self.cst_fct.tv_max, max=1 + 2 * self.cst_fct.tv_max) * a_targ[batch_idx])
-                # projected_probs, eta, tv_cst = tv_proj_probs(probs, old_probs[batch_idx], self.cst_fct.tv_max, self.cst_fct)
+                projected_probs, eta, tv_cst = tv_proj_probs(probs, old_probs[batch_idx], self.cst_fct.tv_max, self.cst_fct)
                 # loss_p_proj = projected_probs.gather(dim=1, index=act[batch_idx]) * a_targ[batch_idx]
-                # loss_p_proj = torch.sum(projected_probs * self.model._adv.detach(), dim=1)
+                loss_p_proj = torch.sum(projected_probs * self.model._adv.detach(), dim=1)
                 # loss_p_proj = torch.sum(probs * self.model._adv.detach(), dim=1)
                 # loss_p_proj = torch.min(torch.sum(projected_probs * self.model._adv.detach(), dim=1), torch.sum(probs * self.model._adv.detach(), dim=1))
                 # loss_p_unproj = torch.sum(self.model._probs * self.model._adv.detach(), dim=1)
                 # loss_p = -torch.mean(torch.min(loss_p_proj, loss_p_unproj)) / eta.detach()
                 # loss_p = (-torch.mean(loss_p_proj) / self.rwd_scale + max(tv_cst, 0) / self.lr_scaling)
-                # loss_p = (-torch.mean(loss_p_proj)) / eta.detach() / self.rwd_scale
-                loss_q = self.lossf_v(self.model._q.gather(dim=1, index=act[batch_idx]), q_targ[batch_idx]) / self.rwd_scale
-                # (loss_p + loss_q).backward()
-                (loss_q).backward()
+                loss_p = (-torch.mean(loss_p_proj)) / eta.detach()
+                loss_a = self.lossf_v(self.model._adv.gather(dim=1, index=act[batch_idx]), a_targ[batch_idx]) / eta.detach()
+                loss_v = self.lossf_v(self.model._value, v_targ[batch_idx]) / eta.detach()
+                (loss_p + loss_v + loss_a).backward()
                 # loss_p = -torch.mean(projected_probs.gather(dim=1, index=act[batch_idx]) * a_targ[batch_idx] / old_probs[batch_idx]) #/ eta.detach()
                 # loss_v = self.lossf_v(self.model._value, v_targ[batch_idx]) #/ eta.detach()
                 # (loss_p + loss_v).backward()
                 # torch.nn.utils.clip_grad_norm_(self.model.parameters(), .1)
+                print(eta)
                 self.optim.step()
 
         total_norm = 0
@@ -231,8 +255,8 @@ class TVRLPolicy(Policy):
         for pg in self.optim.param_groups:
             pg['lr'] = self.lr * self.lr_scaling
 
-        print('sz {:3.2f} lrs {} lr {:3.6f} tv {:3.2f}; target_entropy {}; ts {}'.
-              format(best_stepsize, self.lr_scaling, self.optim.param_groups[0]['lr'], best_avg_tv_val,
+        print('sz {:3.2f} lrs {} lr {:3.6f} tv {:3.2f}; target_lam {:3.2f} target_entropy {}; ts {}'.
+              format(best_stepsize, self.lr_scaling, self.optim.param_groups[0]['lr'], best_avg_tv_val, self.lambda_profile.get_target(),
                      [eproj.entropy_profile.get_target() for eproj in self.model.entropy_projs], self.nb_learning_samples))
         return {}
 
@@ -244,5 +268,6 @@ class TVRLPolicy(Policy):
         self.phase = weights['phase']
         for eproj in self.model.entropy_projs:
             eproj.entropy_profile.set_phase(self.phase)
+        self.lambda_profile.set_phase(self.phase)
 
 
