@@ -78,8 +78,7 @@ class TVRLPolicy(Policy):
     ):
         with torch.no_grad():
             self.model.forward(torch.tensor(np.stack(obs_batch), device=self.device))
-            # action_batch = torch.distributions.Categorical(probs=self.model._probs).sample().cpu().numpy()
-            action_batch = torch.argmax(self.model._q + torch.randn(self.model._q.shape, device=self.device) * 0.01, dim=1).cpu().numpy()
+            action_batch = torch.distributions.Categorical(probs=self.model._probs).sample().cpu().numpy()
             info = {'q_vals': self.model._q.clone().squeeze_(1).cpu().numpy(), 'old_probs': self.model._probs.clone().cpu().numpy()}
 
         return action_batch, [], info
@@ -111,8 +110,8 @@ class TVRLPolicy(Policy):
             # scaling rewards
             q_targ = samples['rewards'] + self.discount * v_vals_next
             rwd_scale_lr = .3
-            # self.rwd_scale = rwd_scale_lr * np.mean(np.abs(q_targ)) + (1 - rwd_scale_lr) * self.rwd_scale
-            self.rwd_scale = 1.
+            self.rwd_scale = rwd_scale_lr * np.mean(np.abs(q_targ)) + (1 - rwd_scale_lr) * self.rwd_scale
+            # self.rwd_scale = 1.
             print(self.rwd_scale)
 
             # updating number of samples and entropy profiles before update
@@ -148,18 +147,17 @@ class TVRLPolicy(Policy):
                 # prob_ratio = act_probs / old_act_probs
                 # loss_p_proj = torch.min(prob_ratio * a_targ[batch_idx],
                 #                         torch.clamp(prob_ratio, min=1 - 2 * self.cst_fct.tv_max, max=1 + 2 * self.cst_fct.tv_max) * a_targ[batch_idx])
-                # projected_probs, eta, tv_cst = tv_proj_probs(probs, old_probs[batch_idx], self.cst_fct.tv_max, self.cst_fct)
+                projected_probs, eta, tv_cst = tv_proj_probs(probs, old_probs[batch_idx], self.cst_fct.tv_max, self.cst_fct)
                 # loss_p_proj = projected_probs.gather(dim=1, index=act[batch_idx]) * a_targ[batch_idx]
-                # loss_p_proj = torch.sum(projected_probs * self.model._adv.detach(), dim=1)
+                loss_p_proj = torch.sum(projected_probs * self.model._adv.detach(), dim=1)
                 # loss_p_proj = torch.sum(probs * self.model._adv.detach(), dim=1)
                 # loss_p_proj = torch.min(torch.sum(projected_probs * self.model._adv.detach(), dim=1), torch.sum(probs * self.model._adv.detach(), dim=1))
                 # loss_p_unproj = torch.sum(self.model._probs * self.model._adv.detach(), dim=1)
                 # loss_p = -torch.mean(torch.min(loss_p_proj, loss_p_unproj)) / eta.detach()
                 # loss_p = (-torch.mean(loss_p_proj) / self.rwd_scale + max(tv_cst, 0) / self.lr_scaling)
-                # loss_p = (-torch.mean(loss_p_proj)) / eta.detach() / self.rwd_scale
-                loss_q = self.lossf_v(self.model._q.gather(dim=1, index=act[batch_idx]), q_targ[batch_idx]) / self.rwd_scale
-                # (loss_p + loss_q).backward()
-                (loss_q).backward()
+                loss_p = (-torch.mean(loss_p_proj)) / eta.detach() / self.rwd_scale
+                loss_q = self.lossf_v(self.model._q.gather(dim=1, index=act[batch_idx]), q_targ[batch_idx]) / eta.detach() / self.rwd_scale
+                (loss_p + loss_q).backward()
                 # loss_p = -torch.mean(projected_probs.gather(dim=1, index=act[batch_idx]) * a_targ[batch_idx] / old_probs[batch_idx]) #/ eta.detach()
                 # loss_v = self.lossf_v(self.model._value, v_targ[batch_idx]) #/ eta.detach()
                 # (loss_p + loss_v).backward()
